@@ -1,166 +1,202 @@
-import openpyxl
-from collections import defaultdict
-from openpyxl.styles import PatternFill
-from openpyxl.utils import get_column_letter
-
-def optimize_count_multiple(ws):
-    data = defaultdict(lambda: defaultdict(int))
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if len(row) < 32:  # Ensure the row has enough columns
-            continue  # Skip this row if it doesn't have enough columns
-        
-        phrase = row[11] if len(row) > 11 else None  # Assuming phrase is in column L (12th column)
-        manually_indexed = row[24] == "Manually Indexed" if len(row) > 24 else False  # Column Y
-        indexer_review = row[31] == "Yes" if len(row) > 31 else False  # Column AF
-        needs_review = [row[i] == "NEEDSREVIEW" for i in range(5) if len(row) > i]  # Columns A-E
-        patient_found = row[4] != "NOTFOUND" if len(row) > 4 else False  # Column E
-        provider_needs_review = row[5] == "NEEDSREVIEW" if len(row) > 5 else False  # Column F
-
-        if phrase and manually_indexed and indexer_review:
-            data[phrase]['total'] += 1
-            for i, val in enumerate(needs_review):
-                if val:
-                    data[phrase][f'col_{i}'] += 1
-            if patient_found and provider_needs_review:
-                data[phrase]['provider_changed'] += 1
-
-    return data
+import win32com.client
+import os
 
 def filed_documents_report_with_phrase_hit_athena():
-    # Load the workbook
-    wb = openpyxl.load_workbook('test_sheet.xlsx')
-    ws = wb['Documents Filed Report']
+    excel = win32com.client.Dispatch("Excel.Application")
+    excel.Visible = True  # For debugging, can be set to False later
 
-    # Print worksheet information for debugging
-    print(f"Number of rows: {ws.max_row}")
-    print(f"Number of columns: {ws.max_column}")
-    print(f"Column headers: {[cell.value for cell in ws[1]]}")
+    workbook_path = os.path.abspath("test_sheet.xlsx")
+    wb = excel.Workbooks.Open(workbook_path)
 
-    # Optimize counting
-    count_data = optimize_count_multiple(ws)
+    try:
+        excel.ScreenUpdating = False
 
-    # Add Phrase Maintenance Sheet
-    phrase_maintenance = wb.create_sheet("Phrase Maintenance")
-    
+        modify_documents_filed_report(wb, excel)
+
+        create_phrase_maintenance_sheet(wb, excel)
+
+        create_phrase_building_sheet(wb, excel)
+
+        create_filter_updates_sheet(wb, excel)
+
+        excel.ScreenUpdating = True
+
+        # Save the workbook
+        wb.Save()
+
+    finally:
+        wb.Close(SaveChanges=True)
+        excel.Quit()
+
+def modify_documents_filed_report(wb, excel):
+    ws = wb.Worksheets("Documents Filed Report")
+
+    ws.Columns("A:A").Insert()
+    ws.Columns("A:A").Insert()
+    ws.Columns("A:A").Insert()
+    ws.Columns("A:A").Insert()
+    ws.Columns("A:A").Insert()
+    ws.Columns("A:A").Insert()
+
+    ws.Range("A1").Value = "Member Match"
+    ws.Range("B1").Value = "Summary Match"
+    ws.Range("C1").Value = "DOS Match"
+    ws.Range("D1").Value = "Signature Match"
+    ws.Range("E1").Value = "Patient Match"
+    ws.Range("F1").Value = "Provider Match"
+
+    # Formulas for matches
+    last_row = ws.Cells(ws.Rows.Count, "G").End(-4162).Row  # -4162 is xlUp
+    ws.Range(f"A2:A{last_row}").Formula = "=IF(L2=N2, \"EXACTMATCH\", \"NEEDSREVIEW\")"
+    ws.Range(f"B2:B{last_row}").Formula = "=IF(M2=O2, \"EXACTMATCH\", \"NEEDSREVIEW\")"
+    ws.Range(f"C2:C{last_row}").Formula = "=IF(P2=Q2, \"EXACTMATCH\", \"NEEDSREVIEW\")"
+    ws.Range(f"D2:D{last_row}").Formula = "=IF(V2=W2, \"EXACTMATCH\", \"NEEDSREVIEW\")"
+    ws.Range(f"E2:E{last_row}").Formula = "=IF(COUNTIF(Y2,\"*oun*\"), \"NOTFOUND\",IF(H2=I2,\"EXACTMATCH\",\"NEEDSREVIEW\"))"
+    ws.Range(f"F2:F{last_row}").Formula = "=IF(AND(E2=\"NOTFOUND\",R2=S2),\"PTNFEXACTMATCH\",IF(AND(E2=\"NOTFOUND\",R2<>S2),\"PTNFNEEDSREVIEW\",IF(AND(E2=\"EXACTMATCH\",R2=S2),\"EXACTMATCH\",IF(AND(E2=\"NEEDSREVIEW\",R2=S2),\"EXACTMATCH\",\"NEEDSREVIEW\"))))"
+
+    # Clear all formulas and convert to values
+    for col in "ABCDEF":
+        ws.Columns(col).Copy()
+        ws.Columns(col).PasteSpecial(Paste=-4163)  # -4163 is xlPasteValues
+
+    # Add Indexer Review column
+    ws.Range("AE1").Value = "Indexer Review"
+    ws.Range(f"AE2:AE{last_row}").Formula = "=VLOOKUP(K2, 'Phrase Hit Report'!A$2:I$30000, 5, FALSE)"
+    ws.Columns("AE").Copy()
+    ws.Columns("AE").PasteSpecial(Paste=-4163)
+
+    # Add # Documents indexed column
+    ws.Range("AF1").Value = "Documents Manually Indexed with No Phrase by HL7 Document Type and HL7 Summary Line"
+    ws.Range(f"AF2:AF{last_row}").Formula = "=COUNTIFS(N:N,N:N, O:O,O:O, X:X, \"Manually Indexed\", K:K,\"=0\")"
+    ws.Columns("AF").Copy()
+    ws.Columns("AF").PasteSpecial(Paste=-4163)
+
+    # Add # where Patient Not Found column
+    ws.Range("AG1").Value = "Indexed Documents with Flag containing No Patient Found and No Phrase Hit by HL7 Document Type and HL7 Summary Line"
+    ws.Range(f"AG2:AG{last_row}").Formula = "=COUNTIFS(N:N,N:N,O:O,O:O,K:K,\"=0\",X:X,\"Manually Indexed\",Y:Y,\"*oun*\")"
+    ws.Columns("AG").Copy()
+    ws.Columns("AG").PasteSpecial(Paste=-4163)
+
+    # Format dates
+    ws.Range("P:P,Q:Q,AA:AA,AB:AB,AC:AC").NumberFormat = "mm/dd/yyyy"
+
+    # Set all rows to no fill
+    ws.Range(f"A2:AG{last_row}").Interior.ColorIndex = -4142  # -4142 is xlNone
+
+    # Freeze pane on header row
+    ws.Rows("2:2").Select()
+    excel.ActiveWindow.FreezePanes = True
+
+    # Auto Fit Rows and set special color for added columns
+    ws.Columns("A:AG").AutoFit()
+    ws.Range("A1,B1,C1,D1,E1,F1,G1,AE1,AF1,AG1").Interior.ColorIndex = 10
+
+    # Insert DocDetails column
+    ws.Columns("G:G").Insert()
+    ws.Range("G1").Value = "DocDetails"
+    ws.Range(f"G2:G{last_row}").Formula = "=HYPERLINK(\"https://core.indxlogic.com/Document/ViewDetail/\"&H2)"
+
+    # Apply filters
+    ws.Range("A1").AutoFilter()
+    ws.Range("A1").AutoFilter(Field=25, Criteria1="Manually Indexed")
+    ws.Range("A1").AutoFilter(Field=12, Criteria1="<>0")
+    ws.Range("A1").AutoFilter(Field=32, Criteria1="Yes")
+
+def create_phrase_maintenance_sheet(wb, excel):
+    wb.Sheets.Add().Name = "Phrase Maintenance"
+    ws_pm = wb.Worksheets("Phrase Maintenance")
+    ws_phr = wb.Worksheets("Phrase Hit Report")
+
     # Copy Phrase Hit Report to Phrase Maintenance
-    phrase_hit_report = wb["Phrase Hit Report"]
-    for row in phrase_hit_report.iter_rows(min_row=1, max_col=10, values_only=True):
-        phrase_maintenance.append(row)
+    ws_phr.Range("A:J").Copy(ws_pm.Range("A1"))
 
     # Rename columns
     new_headers = [
-        'Total Hits in Reporting Period (Indexed)',
-        'Count DT Changed',
-        'Count Summary Changed',
-        'Count DOS Changed',
-        'Count Signature Changed',
-        'Count Patient Found and Changed',
-        'Count Provider Changed where Patient Found'
+        "Total Hits in Reporting Period (Indexed)",
+        "Count DT Changed",
+        "Count Summary Changed",
+        "Count DOS Changed",
+        "Count Signature Changed",
+        "Count Patient Found and Changed",
+        "Count Provider Changed where Patient Found"
     ]
     for col, header in enumerate(new_headers, start=10):
-        phrase_maintenance.cell(row=1, column=col, value=header)
+        ws_pm.Cells(1, col+1).Value = header
 
-    # Fill in the counted data
-    for row in range(2, phrase_maintenance.max_row + 1):
-        phrase = phrase_maintenance.cell(row=row, column=1).value
-        if phrase in count_data:
-            phrase_maintenance.cell(row=row, column=10).value = count_data[phrase]['total']
-            for i in range(5):
-                phrase_maintenance.cell(row=row, column=11+i).value = count_data[phrase].get(f'col_{i}', 0)
-            phrase_maintenance.cell(row=row, column=16).value = count_data[phrase].get('provider_changed', 0)
-        else:
-            # If the phrase is not in count_data, fill with zeros
-            for col in range(10, 17):
-                phrase_maintenance.cell(row=row, column=col).value = 0
+    # Set formulas for new columns
+    last_row = ws_pm.Cells(ws_pm.Rows.Count, "A").End(-4162).Row
+    formulas = [
+        "=COUNTIFS('Documents Filed Report'!L:L, A2, 'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2,  'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\", 'Documents Filed Report'!A:A,\"NEEDSREVIEW\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2,'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\", 'Documents Filed Report'!B:B,\"NEEDSREVIEW\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2, 'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\", 'Documents Filed Report'!C:C,\"NEEDSREVIEW\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2, 'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\", 'Documents Filed Report'!D:D,\"NEEDSREVIEW\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2, 'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\", 'Documents Filed Report'!E:E,\"NEEDSREVIEW\")",
+        "=COUNTIFS('Documents Filed Report'!L:L, A2, 'Documents Filed Report'!Y:Y,\"Manually Indexed\", 'Documents Filed Report'!AF:AF,\"Yes\",  'Documents Filed Report'!E:E, \"<>NOTFOUND\",  'Documents Filed Report'!F:F,\"NEEDSREVIEW\")"
+    ]
+    for col, formula in enumerate(formulas, start=10):
+        ws_pm.Range(f"{chr(65+col)}2:{chr(65+col)}{last_row}").Formula = formula
 
-    # Format dates
-    date_columns = ['P', 'Q', 'AA', 'AB', 'AC']
-    for col in date_columns:
-        for cell in ws[col]:
-            cell.number_format = 'mm/dd/yyyy'
+    # Convert formulas to values
+    ws_pm.Range(f"J2:P{last_row}").Copy()
+    ws_pm.Range(f"J2:P{last_row}").PasteSpecial(Paste=-4163)
 
-    # Set all rows to no fill
-    no_fill = PatternFill(fill_type=None)
-    for row in ws['A2:AG200000']:
-        for cell in row:
-            cell.fill = no_fill
+    # Format worksheet
+    ws_pm.Columns("A:P").AutoFit()
+    ws_pm.Range("J2:P2").Interior.ColorIndex = 10
+    ws_pm.Range("I:I").NumberFormat = "mm/dd/yyyy"
 
-    # Freeze pane on header row
-    ws.freeze_panes = 'A2'
+    # Sort by Total Hits in Reporting Period
+    ws_pm.Range(f"A1:P{last_row}").Sort(Key1=ws_pm.Range("J2"), Order1=2, Header=1)  # 2 is xlDescending
 
-    # Auto fit columns
-    for col in ws.columns:
-        max_length = 0
-        column = col[0].column_letter
-        for cell in col:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(cell.value)
-            except:
-                pass
-        adjusted_width = (max_length + 2)
-        ws.column_dimensions[column].width = adjusted_width
+    # Apply filter
+    ws_pm.Range("A1").AutoFilter()
+    ws_pm.Range("A1").AutoFilter(Field=5, Criteria1="Yes")
 
-    # Set special color for added columns
-    light_blue_fill = PatternFill(start_color='9BC2E6', end_color='9BC2E6', fill_type='solid')
-    for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'AE', 'AF', 'AG']:
-        ws[f'{col}1'].fill = light_blue_fill
+    # Add Phrase Filter Button
+    shape = ws_pm.Shapes.AddShape(5, 0, 0, 100, 20)  # 5 is msoShapeRoundedRectangle
+    shape.TextFrame.Characters().Text = "Phrase Filter Button"
+    shape.TextFrame.Characters().Font.Size = 10
+    shape.Left = 0
+    shape.Top = 0
+    ws_pm.Rows("1:1").RowHeight = 24
+    shape.OnAction = "PERSONAL.XLSB!PhraseMaintenancePhraseFilter"
 
-    # Add Phrase Building sheet
-    phrase_building = wb.create_sheet("Phrase Building")
+def create_phrase_building_sheet(wb, excel):
+    wb.Sheets.Add().Name = "Phrase Building"
+    ws_pb = wb.Worksheets("Phrase Building")
+    ws_dfr = wb.Worksheets("Documents Filed Report")
 
     # Copy relevant columns from Documents Filed Report
-    columns_to_copy = ['O', 'P', 'AG', 'AH']
-    for col, source_col in enumerate(columns_to_copy, start=1):
-        for row in range(1, ws.max_row + 1):
-            phrase_building.cell(row=row, column=col, value=ws[f'{source_col}{row}'].value)
+    ws_dfr.Range("O:P,AG:AH").Copy(ws_pb.Range("A1"))
 
-    # Sort the data (Note: This is a simple sort, might need adjustment for large datasets)
-    data = list(phrase_building.iter_rows(values_only=True))
-    headers = data.pop(0)
+    # Sort and remove duplicates
+    last_row = ws_pb.Cells(ws_pb.Rows.Count, "A").End(-4162).Row
+    ws_pb.Range(f"A1:D{last_row}").Sort(Key1=ws_pb.Range("C1"), Order1=2, Key2=ws_pb.Range("D1"), Order2=2, Header=1)
+    ws_pb.Range(f"A1:D{last_row}").RemoveDuplicates(Columns=(1, 2, 3, 4), Header=1)
 
-    print("Data in Phrase Building sheet:")
-    for row in data[:10]:  # Print first 10 rows
-        print(row)
+    # Format worksheet
+    ws_pb.Columns("A:D").AutoFit()
+    ws_pb.Range("C1:D1").Interior.ColorIndex = 10
 
-    def safe_sort_key(x):
-        return (
-            -float(x[2]) if x[2] is not None and x[2] != '' else float('inf'),
-            -float(x[3]) if x[3] is not None and x[3] != '' else float('inf')
-        )
+def create_filter_updates_sheet(wb, excel):
+    wb.Sheets.Add().Name = "Filter Updates"
+    ws = wb.Worksheets("Filter Updates")
 
-    sorted_data = sorted(data, key=safe_sort_key)
-    phrase_building.delete_rows(2, phrase_building.max_row)
-    phrase_building.append(headers)
-    for row in sorted_data:
-        phrase_building.append(row)
+    ws.Range("A1").Value = "Version 1.26.2023"
+    ws.Range("A9").Value = "Phrase Maintenance criteria: 1)Phrase is not 0. 2)Status is Manually Indexed. 3)Phrase Indexer Review = Yes."
+    ws.Range("A10").Value = "Phrase Building criteria: 1)Phrase is 0. 2) Status is Manually Indexed."
 
-    # Remove duplicates
-    data = list(phrase_building.iter_rows(values_only=True))
-    unique_data = list(dict.fromkeys(map(tuple, data)))
-    phrase_building.delete_rows(2, phrase_building.max_row)
-    for row in unique_data:
-        phrase_building.append(row)
+    # Add shapes for buttons
+    shape1 = ws.Shapes.AddShape(5, 0, 40, 200, 40)  # 5 is msoShapeRoundedRectangle
+    shape1.TextFrame.Characters().Text = "Select this box to automatically apply the criteria used for Phrase Maintenance in the Documents Filed Report tab."
+    shape1.TextFrame.Characters().Font.Size = 10
+    shape1.OnAction = "PERSONAL.XLSB!PhraseMaintenanceFilters"
 
-    # Add Filter Updates sheet
-    filter_updates = wb.create_sheet("Filter Updates")
-    filter_updates['A1'] = "Version 1.26.2023"
-    
-    # Add text as comments (since openpyxl doesn't support text boxes)
-    filter_updates['A4'].comment = openpyxl.comments.Comment(
-        "Select this box to automatically apply the criteria used for Phrase Maintenance in the Documents Filed Report tab.",
-        "System"
-    )
-    filter_updates['E4'].comment = openpyxl.comments.Comment(
-        "Select this box to automatically apply the criteria used for Phrase Building to the Documents Filed Report tab.",
-        "System"
-    )
-
-    filter_updates['A9'] = "Phrase Maintenance criteria: 1)Phrase is not 0. 2)Status is Manually Indexed. 3)Phrase Indexer Review = Yes."
-    filter_updates['A10'] = "Phrase Building criteria: 1)Phrase is 0. 2) Status is Manually Indexed."
-
-    # Save the workbook
-    wb.save('updated_workbook.xlsx')
+    shape2 = ws.Shapes.AddShape(5, 250, 40, 200, 40)
+    shape2.TextFrame.Characters().Text = "Select this box to automatically apply the criteria used for Phrase Building to the Documents Filed Report tab."
+    shape2.TextFrame.Characters().Font.Size = 10
+    shape2.OnAction = "PERSONAL.XLSB!PhraseBuildingCriteria"
 
 # Run the function
 filed_documents_report_with_phrase_hit_athena()
