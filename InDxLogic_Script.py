@@ -325,12 +325,5 @@ def post_analysis_formatting(wb, excel):
 
 filed_documents_report_with_phrase_hit_athena()
 
-# Apply 'filter' to all table heads
-
 # Combine column HL7 Document Type and Summary Line into one value and stacked appropriately
 # IDL and HL7 Signature should both say "Unsigned" not "Not Signed"
-
-
-# Improvements:
-
-# Add tab to Phrase maintenance tab: Count where pt found and DOS changed 
